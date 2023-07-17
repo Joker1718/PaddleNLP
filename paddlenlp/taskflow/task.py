@@ -202,7 +202,7 @@ class Task(metaclass=abc.ABCMeta):
                 logger.info((">>> [InferBackend] INT8 inference on CPU ..."))
         elif paddle.get_device().split(":", 1)[0] == "npu":
             self._config.disable_gpu()
-            self._config.enable_npu(self.kwargs["device_id"])
+            self._config.enable_custom_device("npu", self.kwargs["device_id"])
         else:
             if self._infer_precision == "int8":
                 logger.info(
@@ -453,8 +453,13 @@ class Task(metaclass=abc.ABCMeta):
                     temp_text_list = [sen[i : i + max_text_len] for i in range(0, lens, max_text_len)]
                     short_input_texts.extend(temp_text_list)
                     if with_bbox:
-                        temp_bbox_list = [bbox_list[idx][i : i + max_text_len] for i in range(0, lens, max_text_len)]
-                        short_bbox_list.extend(temp_bbox_list)
+                        if bbox_list[idx] is not None:
+                            temp_bbox_list = [
+                                bbox_list[idx][i : i + max_text_len] for i in range(0, lens, max_text_len)
+                            ]
+                            short_bbox_list.extend(temp_bbox_list)
+                        else:
+                            short_bbox_list.extend([None for _ in range(len(temp_text_list))])
                     short_idx = cnt_short
                     cnt_short += math.ceil(lens / max_text_len)
                     temp_text_id = [short_idx + i for i in range(cnt_short - short_idx)]

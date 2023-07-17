@@ -12,14 +12,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
+import os
+import tempfile
+import unittest
 
+import numpy as np
 import paddle
 
-from paddlenlp.transformers import (
+from paddlenlp.transformers import (  # import gpt model
+    AutoModelForCausalLM,
+    AutoTokenizer,
     BartForConditionalGeneration,
     BartTokenizer,
+    GPTLMHeadModel,
     PretrainedConfig,
+    PretrainedTokenizer,
 )
 from paddlenlp.transformers.generation_utils import (
     BeamSearchScorer,
@@ -31,6 +40,7 @@ from paddlenlp.transformers.generation_utils import (
     RepetitionPenaltyLogitsProcessor,
     TopKProcess,
     TopPProcess,
+    get_unfinished_flag,
 )
 from tests.testing_utils import slow
 
@@ -1009,3 +1019,247 @@ class GenerationIntegrationTests:
         diff = (batched_out - out).abs()
 
         self.assertTrue(diff.numpy() < 1e-6)
+
+
+class GenerationUtilsTestCase(unittest.TestCase):
+    def test_get_unfinished_flag(self):
+        input_ids = paddle.to_tensor([[1, 2, 3, 4, 5, 6, 7], [5, 6, 7, 8, 9, 10, 11]], dtype=paddle.int64)
+
+        # 1. test single eos_token_id
+        eos_token_id = 6
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [True, True])
+
+        eos_token_id = 7
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [False, True])
+
+        # 2. get tokens
+        eos_token_id = [6, 7]
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [False, True])
+
+        eos_token_id = [10, 11]
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [True, False])
+
+        # 3. get multi tokens
+        eos_token_id = [[6, 7], [9, 10]]
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [False, True])
+
+        eos_token_id = [[6, 7], [10, 11]]
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [False, False])
+
+        eos_token_id = [[7], [11]]
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [False, False])
+
+        eos_token_id = [[7], [10, 11]]
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [False, False])
+
+        eos_token_id = [[7], [10, 12]]
+        unfinish_flag = paddle.to_tensor([[True], [True]], dtype="bool")
+        unfinish_flag = get_unfinished_flag(input_ids, unfinish_flag, eos_token_id)
+        self.assertEqual(unfinish_flag.reshape([2]).tolist(), [False, True])
+
+    @slow
+    def test_gpt_multi_stop_tokens(self):
+        tokenizer: PretrainedTokenizer = AutoTokenizer.from_pretrained("gpt-cpm-small-cn-distill")
+
+        input_ids = tokenizer("中国的首都是")["input_ids"]
+        model = AutoModelForCausalLM.from_pretrained("gpt-cpm-small-cn-distill")
+        model.eval()
+
+        # 1. generate with no special eos_token_id
+        # [520, 8, 9, 59, 124, 635, 8, 12, 8, 10, 8, 10, 8, 10, 8, 10, 8, 10, 8, 10]
+        decoded_ids = model.generate(paddle.to_tensor([input_ids]), max_length=20)[0].tolist()[0]
+        self.assertEqual(len(decoded_ids), 20)
+
+        # 2. generate with single special eos_token_id (12)
+        decoded_ids = model.generate(paddle.to_tensor([input_ids]), max_length=20, eos_token_id=12)[0].tolist()[0]
+        self.assertEqual(decoded_ids, [520, 8, 9, 59, 124, 635, 8, 12])
+
+        decoded_ids = model.generate(paddle.to_tensor([input_ids]), max_length=20, eos_token_id=635)[0].tolist()[0]
+        self.assertEqual(decoded_ids, [520, 8, 9, 59, 124, 635])
+
+        # 3. generate with single tokens
+        decoded_ids = model.generate(paddle.to_tensor([input_ids]), max_length=20, eos_token_id=[124, 635])[
+            0
+        ].tolist()[0]
+        self.assertEqual(decoded_ids, [520, 8, 9, 59, 124, 635])
+
+        # 4. generate with multi tokens
+        decoded_ids = model.generate(
+            paddle.to_tensor([input_ids]), max_length=20, eos_token_id=[[59, 124], [124, 635]]
+        )[0].tolist()[0]
+        self.assertEqual(decoded_ids, [520, 8, 9, 59, 124])
+
+    def test_gpt_generation(self):
+        # init the tiny-random-gpt
+        model = GPTLMHeadModel.from_pretrained("__internal_testing__/tiny-random-gpt")
+        model.eval()
+
+        input_ids = np.array([list(range(200, 300)), list(range(100, 200))])
+
+        # 1. get the dygraph decoded_ids
+        expected_output_ids = [[15426, 15426, 15426, 15426, 15426, 15426], [18966, 18000, 23410, 23410, 23410, 23410]]
+
+        decoded_ids = model.generate(paddle.to_tensor(input_ids), max_length=6)[0].tolist()
+
+        self.assertEqual(expected_output_ids, decoded_ids)
+
+        decoded_ids = model.generate(paddle.to_tensor(input_ids), max_length=6, eos_token_id=[1800, 23410])[0].tolist()
+        self.assertEqual(expected_output_ids, decoded_ids)
+
+
+class GenerationD2STest(unittest.TestCase):
+    def test_to_static_use_top_k(self):
+        article = """Justin Timberlake and Jessica Biel, welcome to parenthood."""
+
+        tokenizer = AutoTokenizer.from_pretrained("__internal_testing__/micro-random-llama")
+        model = AutoModelForCausalLM.from_pretrained("__internal_testing__/micro-random-llama")
+        input_ids = paddle.to_tensor(tokenizer(article)["input_ids"]).unsqueeze([0])
+
+        model.eval()
+
+        # Llama model do not contians ``
+        model.is_encoder_decoder = False
+
+        max_length = 25
+        input_ids = paddle.to_tensor([[i for i in range(100, 120)]])
+
+        bos_token_id = getattr(model, "bos_token_id", None)
+        eos_token_id = getattr(model, "eos_token_id", None)
+        pad_token_id = getattr(model, "pad_token_id", None)
+
+        model_kwargs = {}
+
+        model_kwargs["attention_mask"] = paddle.ones_like(input_ids)
+        model_kwargs["use_cache"] = True
+        model_kwargs["max_length"] = max_length + input_ids.shape[-1]
+        model_kwargs["input_ids"] = input_ids
+
+        decoded_ids = model.greedy_search(
+            bos_token_id=bos_token_id,
+            pad_token_id=pad_token_id,
+            eos_token_id=eos_token_id,
+            logits_processors=None,
+            **model_kwargs,
+        )[0]
+
+        dygraph_decoded_ids = decoded_ids.tolist()
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = os.path.join(tempdir, "model")
+            model.to_static(
+                path,
+                config=dict(
+                    bos_token_id=bos_token_id, pad_token_id=pad_token_id, eos_token_id=eos_token_id, use_top_p=False
+                ),
+            )
+
+            model_path = os.path.join(tempdir, "model.pdmodel")
+            params_path = os.path.join(tempdir, "model.pdiparams")
+            config = paddle.inference.Config(model_path, params_path)
+
+            config.disable_gpu()
+            config.disable_glog_info()
+            predictor = paddle.inference.create_predictor(config)
+
+            model_kwargs["top_k"] = 1
+            model_kwargs["max_length"] = 25
+            # create input
+            for key in model_kwargs.keys():
+                if paddle.is_tensor(model_kwargs[key]):
+                    model_kwargs[key] = model_kwargs[key].numpy()
+                else:
+                    model_kwargs[key] = np.array(model_kwargs[key])
+
+            input_handles = {}
+            for name in predictor.get_input_names():
+                input_handles[name] = predictor.get_input_handle(name)
+                input_handles[name].copy_from_cpu(model_kwargs[name])
+
+            predictor.run()
+            output_names = predictor.get_output_names()
+            output_handle = predictor.get_output_handle(output_names[0])
+            results = output_handle.copy_to_cpu()
+
+            static_decoded_ids = results.tolist()
+
+        self.assertEqual(dygraph_decoded_ids, static_decoded_ids)
+
+    def test_to_static_use_top_p(self):
+        article = """Justin Timberlake and Jessica Biel, welcome to parenthood."""
+
+        tokenizer = AutoTokenizer.from_pretrained("__internal_testing__/micro-random-llama")
+        model = AutoModelForCausalLM.from_pretrained("__internal_testing__/micro-random-llama")
+        input_ids = paddle.to_tensor(tokenizer(article)["input_ids"]).unsqueeze([0])
+
+        model.eval()
+
+        # Llama model do not contians ``
+        model.is_encoder_decoder = False
+
+        max_length = 25
+        input_ids = paddle.to_tensor([[i for i in range(100, 120)]])
+
+        bos_token_id = getattr(model, "bos_token_id", None)
+        eos_token_id = getattr(model, "eos_token_id", None)
+        pad_token_id = getattr(model, "pad_token_id", None)
+
+        model_kwargs = {}
+
+        model_kwargs["attention_mask"] = paddle.ones_like(input_ids)
+        model_kwargs["use_cache"] = True
+        model_kwargs["max_length"] = max_length + input_ids.shape[-1]
+        model_kwargs["input_ids"] = input_ids
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = os.path.join(tempdir, "model")
+            model.to_static(
+                path,
+                config=dict(
+                    bos_token_id=bos_token_id, pad_token_id=pad_token_id, eos_token_id=eos_token_id, use_top_p=False
+                ),
+            )
+
+            model_path = os.path.join(tempdir, "model.pdmodel")
+            params_path = os.path.join(tempdir, "model.pdiparams")
+            config = paddle.inference.Config(model_path, params_path)
+
+            config.disable_gpu()
+            config.disable_glog_info()
+            predictor = paddle.inference.create_predictor(config)
+
+            model_kwargs["top_k"] = 1
+            model_kwargs["max_length"] = 25
+            # create input
+            for key in model_kwargs.keys():
+                if paddle.is_tensor(model_kwargs[key]):
+                    model_kwargs[key] = model_kwargs[key].numpy()
+                else:
+                    model_kwargs[key] = np.array(model_kwargs[key])
+
+            input_handles = {}
+            for name in predictor.get_input_names():
+                input_handles[name] = predictor.get_input_handle(name)
+                input_handles[name].copy_from_cpu(model_kwargs[name])
+
+            predictor.run()
+            output_names = predictor.get_output_names()
+            output_handle = predictor.get_output_handle(output_names[0])
+            results = output_handle.copy_to_cpu()
+
+            self.assertIsNotNone(results)

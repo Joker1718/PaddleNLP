@@ -54,6 +54,7 @@ TOKENIZER_MAPPING_NAMES = OrderedDict(
         ("ErnieGramTokenizer", "ernie_gram"),
         ("ErnieLayoutTokenizer", "ernie_layout"),
         ("ErnieMTokenizer", "ernie_m"),
+        ("ErnieCodeTokenizer", "ernie_code"),
         ("ErnieTokenizer", "ernie"),
         ("FNetTokenizer", "fnet"),
         ("FunnelTokenizer", "funnel"),
@@ -101,6 +102,7 @@ TOKENIZER_MAPPING_NAMES = OrderedDict(
         ("GLMGPT2Tokenizer", "glm"),
         ("BloomTokenizer", "bloom"),
         ("ChatGLMTokenizer", "chatglm"),
+        ("SpeechT5Tokenizer", "speecht5"),
     ]
 )
 
@@ -292,7 +294,7 @@ class AutoTokenizer:
                 )
                 logger.info(f"We are using {tokenizer_class} to load '{pretrained_model_name_or_path}'.")
                 return tokenizer_class.from_pretrained(
-                    pretrained_model_name_or_path, from_hf_hub=from_hf_hub, *model_args, **kwargs
+                    pretrained_model_name_or_path, from_hf_hub=from_hf_hub, subfolder=subfolder, *model_args, **kwargs
                 )
         # From built-in pretrained models
         elif pretrained_model_name_or_path in all_tokenizer_names:

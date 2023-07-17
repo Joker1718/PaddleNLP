@@ -572,8 +572,8 @@ class PretrainedConfig:
             self.id2label = dict((int(key), value) for key, value in self.id2label.items())
             # Keys are always strings in JSON so convert ids to int here.
         else:
-            num_labels = kwargs.pop("num_labels", 2)
-            self.num_labels = num_labels if num_labels is not None else 2
+            self.num_labels = kwargs.pop("num_labels", 2)
+        self.num_choices = kwargs.pop("num_choices", None)
 
         self.classifier_dropout = kwargs.pop("classifier_dropout", None)
 
@@ -586,7 +586,6 @@ class PretrainedConfig:
         self.sep_token_id = kwargs.pop("sep_token_id", None)
 
         self.fp16_opt_level = kwargs.pop("fp16_opt_level", None)
-        self.dtype = kwargs.pop("dtype", None)
 
         self.decoder_start_token_id = kwargs.pop("decoder_start_token_id", None)
 
@@ -853,13 +852,11 @@ class PretrainedConfig:
             raise FileNotFoundError(f"configuration file<{CONFIG_NAME}> or <{LEGACY_CONFIG_NAME}> not found")
 
         try:
-            logger.info(f"loading configuration file {resolved_config_file}")
+            logger.info(f"Loading configuration file {resolved_config_file}")
             # Load config dict
             config_dict = cls._dict_from_json_file(resolved_config_file)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise EnvironmentError(
-                f"It looks like the config file<'{resolved_config_file}'> is not a valid JSON file."
-            )
+            raise EnvironmentError(f"Config file<'{resolved_config_file}'> is not a valid JSON file.")
 
         return config_dict, kwargs
 
@@ -915,7 +912,6 @@ class PretrainedConfig:
         for key in to_remove:
             kwargs.pop(key, None)
 
-        logger.info(f"Model config {config}")
         if return_unused_kwargs:
             return config, kwargs
         else:
